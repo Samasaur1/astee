@@ -62,34 +62,50 @@ for try await con in serverSocket.sockets {
     print("[\(uuid)] Connected to remote!")
 
     Task {
-        while true {
-            do {
-                let data = try await con.read(atMost: BUF_SIZE)
-                print("[\(uuid)] Read \(data.count) bytes from socket: \(String(describing: String(bytes: data, encoding: .utf8)))")
+        try await withThrowingTaskGroup(of: Void.self) { group -> Void in
+            group.addTask {
+                while true {
+                    do {
+                        let data = try await con.read(atMost: BUF_SIZE)
+                        print("[\(uuid)] Read \(data.count) bytes from socket: \(String(describing: String(bytes: data, encoding: .utf8)))")
 
-                try await outgoing.write(Data(data))
-                print("[\(uuid)] Wrote \(data.count) bytes to socket")
-            } catch {
-                print("[\(uuid)] error: \(error)")
-                break
+                        try await outgoing.write(Data(data))
+                        print("[\(uuid)] Wrote \(data.count) bytes to socket")
+                    } catch is CancellationError {
+                        // The other socket closed
+                        try con.close()
+                    } catch SocketError.disconnected {
+                        print("[\(uuid)] disconnected")
+                        throw SocketError.disconnected
+                    } catch {
+                        print("[\(uuid)] error: \(error)")
+                        print(type(of: error))
+                        throw error
+                    }
+                }
             }
-        }
-    }
+            group.addTask {
+                while true {
+                    do {
+                        let data = try await outgoing.read(atMost: BUF_SIZE)
+                        print("[\(uuid)] Read \(data.count) bytes from socket: \(String(describing: String(bytes: data, encoding: .utf8)))")
 
-    Task {
-        while true {
-            do {
-                let data = try await outgoing.read(atMost: BUF_SIZE)
-                print("[\(uuid)] Read \(data.count) bytes from socket: \(String(describing: String(bytes: data, encoding: .utf8)))")
-
-                try await con.write(Data(data))
-                print("[\(uuid)] Wrote \(data.count) bytes to socket")
-            } catch {
-                print("[\(uuid)] error: \(error)")
-                break
+                        try await con.write(Data(data))
+                        print("[\(uuid)] Wrote \(data.count) bytes to socket")
+                    } catch is CancellationError {
+                        // The other socket closed
+                        try outgoing.close()
+                    } catch SocketError.disconnected {
+                        print("[\(uuid)] disconnected")
+                        throw SocketError.disconnected
+                    } catch {
+                        print("[\(uuid)] error: \(error)")
+                        print(type(of: error))
+                        throw error
+                    }
+                }
             }
+            try await group.next() // This propagates errors, which cancels the other child task
         }
     }
 }
-
-//1024 byte buffer
