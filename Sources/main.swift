@@ -18,15 +18,31 @@ guard let remotePort = UInt16(CommandLine.arguments[3]) else {
     exit(1)
 }
 
+let verbose = CommandLine.argc > 4
+
 let DEST_ADDR: SocketAddress = if let v4 = try? sockaddr_in.inet(ip4: remoteHost, port: remotePort) {
     v4
 } else if let v6 = try? sockaddr_in6.inet6(ip6: remoteHost, port: remotePort) {
     v6
 } else {
-    fatalError()
+    fatalError("Unable to create remote address")
 }
 
 let BUF_SIZE = 1024
+
+func logOut(uuid: UUID, host: String, port: UInt16, data: Data) -> String {
+    if let str = String(bytes: data, encoding: .utf8) {
+        return "-> \(data.count) bytes:\t" + str
+    }
+    return "-> \(data.count) bytes"
+}
+// let logIn = { (uuid: UUID, host: String, port: UInt16, data: Data) in // gives errors about not beign run on @MainActor
+func logIn(uuid: UUID, host: String, port: UInt16, data: Data) -> String {
+    if let str = String(bytes: data, encoding: .utf8) {
+        return "<- \(data.count) bytes:\t" + str
+    }
+    return "<- \(data.count) bytes"
+}
 
 // MARK: - main logic
 
@@ -48,13 +64,21 @@ Task {
 for try await con in serverSocket.sockets {
     let uuid = UUID()
 
+    let addr: String
+    let port: UInt16
+
     switch try con.socket.remotePeer() {
-    case let .ip4(ip, port):
-        print("[\(uuid)] Connected from \(ip):\(port)")
-    case let .ip6(ip, port):
-        print("[\(uuid)] Connected from [\(ip)]:\(port)")
+    case let .ip4(ip, _port):
+        addr = ip
+        port = _port
+        print("[\(uuid)] Connected from \(ip):\(_port)")
+    case let .ip6(ip, _port):
+        addr = ip
+        port = _port
+        print("[\(uuid)] Connected from [\(ip)]:\(_port)")
     case let .unix(path):
         print("[\(uuid)] Connected from \(path)")
+        fatalError("This should never happen!")
     }
 
     print("[\(uuid)] Connecting to remote...")
@@ -66,10 +90,12 @@ for try await con in serverSocket.sockets {
             group.addTask {
                 while true {
                     do {
-                        let data = try await con.read(atMost: BUF_SIZE)
+                        let data = try await Data(con.read(atMost: BUF_SIZE))
                         print("[\(uuid)] Read \(data.count) bytes from socket: \(String(describing: String(bytes: data, encoding: .utf8)))")
 
-                        try await outgoing.write(Data(data))
+                        print(logOut(uuid: uuid, host: addr, port: port, data: data))
+
+                        try await outgoing.write(data)
                         print("[\(uuid)] Wrote \(data.count) bytes to socket")
                     } catch is CancellationError {
                         // The other socket closed
@@ -87,10 +113,12 @@ for try await con in serverSocket.sockets {
             group.addTask {
                 while true {
                     do {
-                        let data = try await outgoing.read(atMost: BUF_SIZE)
+                        let data = try await Data(outgoing.read(atMost: BUF_SIZE))
                         print("[\(uuid)] Read \(data.count) bytes from socket: \(String(describing: String(bytes: data, encoding: .utf8)))")
 
-                        try await con.write(Data(data))
+                        print(logIn(uuid: uuid, host: addr, port: port, data: data))
+
+                        try await con.write(data)
                         print("[\(uuid)] Wrote \(data.count) bytes to socket")
                     } catch is CancellationError {
                         // The other socket closed
